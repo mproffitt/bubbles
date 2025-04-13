@@ -44,10 +44,24 @@ func WithDefaultGradient() Option {
 	return WithGradient("#5A56E0", "#EE6FF8")
 }
 
+// WithDefaultEmptyGradient sets a gradient fill in the empty area
+// of the progress bar.
+func WithDefaultEmptyGradient() Option {
+	return WithEmptyGradient("#EE6FF8", "#5A56E0")
+}
+
 // WithGradient sets a gradient fill blending between two colors.
 func WithGradient(colorA, colorB string) Option {
 	return func(m *Model) {
 		m.setRamp(colorA, colorB, false)
+	}
+}
+
+// WithEmptyGradient sets a gradient fill blending between two colors
+// in the empty area of the progress bar.
+func WithEmptyGradient(colorA, colorB string) Option {
+	return func(m *Model) {
+		m.setEmptyRamp(colorA, colorB, false)
 	}
 }
 
@@ -62,6 +76,14 @@ func WithDefaultScaledGradient() Option {
 func WithScaledGradient(colorA, colorB string) Option {
 	return func(m *Model) {
 		m.setRamp(colorA, colorB, true)
+	}
+}
+
+// WithScaledEmptyGradient scales the gradient assigned to the empty area of the
+// progress bar.
+func WithScaledEmptyGradient(colorA, colorB string) Option {
+	return func(m *Model) {
+		m.setEmptyRamp(colorA, colorB, true)
 	}
 }
 
@@ -159,10 +181,16 @@ type Model struct {
 	rampColorA colorful.Color
 	rampColorB colorful.Color
 
+	// Empty gradient
+	useEmptyRamp    bool
+	emptyRampColorA colorful.Color
+	emptyRampColorB colorful.Color
+
 	// When true, we scale the gradient to fit the width of the filled section
 	// of the progress bar. When false, the width of the gradient will be set
 	// to the full width of the progress bar.
-	scaleRamp bool
+	scaleRamp      bool
+	scaleEmptyRamp bool
 
 	// Color profile for the progress bar.
 	colorProfile termenv.Profile
@@ -301,17 +329,8 @@ func (m Model) barView(b *strings.Builder, percent float64, textWidth int) {
 
 	if m.useRamp {
 		// Gradient fill
-		for i := 0; i < fw; i++ {
-			if fw == 1 {
-				// this is up for debate: in a gradient of width=1, should the
-				// single character rendered be the first color, the last color
-				// or exactly 50% in between? I opted for 50%
-				p = 0.5
-			} else if m.scaleRamp {
-				p = float64(i) / float64(fw-1)
-			} else {
-				p = float64(i) / float64(tw-1)
-			}
+		for i := range fw {
+			p = m.calculateLuvPercent(i, fw, tw, m.scaleRamp)
 			c := m.rampColorA.BlendLuv(m.rampColorB, p).Hex()
 			b.WriteString(termenv.
 				String(string(m.Full)).
@@ -325,10 +344,37 @@ func (m Model) barView(b *strings.Builder, percent float64, textWidth int) {
 		b.WriteString(strings.Repeat(s, fw))
 	}
 
-	// Empty fill
-	e := termenv.String(string(m.Empty)).Foreground(m.color(m.EmptyColor)).String()
 	n := max(0, tw-fw)
-	b.WriteString(strings.Repeat(e, n))
+	if m.useEmptyRamp {
+		// Gradient fill
+		for i := range n {
+			p = m.calculateLuvPercent(i, n, tw, m.scaleEmptyRamp)
+			c := m.emptyRampColorA.BlendLuv(m.emptyRampColorB, p).Hex()
+			b.WriteString(termenv.
+				String(string(m.Full)).
+				Foreground(m.color(c)).
+				String(),
+			)
+		}
+	} else {
+		// Empty fill
+		e := termenv.String(string(m.Empty)).Foreground(m.color(m.EmptyColor)).String()
+		b.WriteString(strings.Repeat(e, n))
+	}
+}
+
+func (m Model) calculateLuvPercent(i, fw, tw int, scaled bool) float64 {
+	// this is up for debate: in a gradient of width=1, should the
+	// single character rendered be the first color, the last color
+	// or exactly 50% in between? I opted for 50%
+	p := 0.5
+	if fw > 1 {
+		p = float64(i) / float64(tw-1)
+		if scaled {
+			p = float64(i) / float64(fw-1)
+		}
+	}
+	return p
 }
 
 func (m Model) percentageView(percent float64) string {
@@ -352,6 +398,19 @@ func (m *Model) setRamp(colorA, colorB string, scaled bool) {
 	m.scaleRamp = scaled
 	m.rampColorA = a
 	m.rampColorB = b
+}
+
+func (m *Model) setEmptyRamp(colorA, colorB string, scaled bool) {
+	// In the event of an error colors here will default to black. For
+	// usability's sake, and because such an error is only cosmetic, we're
+	// ignoring the error.
+	a, _ := colorful.Hex(colorA)
+	b, _ := colorful.Hex(colorB)
+
+	m.useEmptyRamp = true
+	m.scaleEmptyRamp = scaled
+	m.emptyRampColorA = a
+	m.emptyRampColorB = b
 }
 
 func (m Model) color(c string) termenv.Color {
